@@ -1,0 +1,114 @@
+import streamlit as st
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.stem import WordNetLemmatizer
+import string
+import heapq
+import spacy
+from io import BytesIO
+import fitz # type: ignore
+from docx import Document # type: ignore
+from collections import Counter
+
+nlp = spacy.load("en_core_web_sm")
+
+# Function to preprocess text
+def preprocess_text(text):
+    words = word_tokenize(text.lower())  # Tokenize and convert to lowercase
+    words = [word for word in words if word not in string.punctuation]  # Remove punctuation
+    stop_words = set(stopwords.words('english'))  # Get English stopwords
+    words = [word for word in words if word not in stop_words]  # Remove stopwords
+    lemmatizer = WordNetLemmatizer()  # Initialize lemmatizer
+    words = [lemmatizer.lemmatize(word) for word in words]  # Lemmatize words
+    return ' '.join(words)  # Join words into a single string
+
+# Function to extract text from PDF
+def extract_text_from_pdf(upload_file):
+    try:
+        pdf_data = BytesIO(upload_file.read())  # Read uploaded PDF file
+        doc = fitz.open(stream=pdf_data, filetype="pdf")  # Open PDF document
+        text = ""
+        for page in doc:
+            text += page.get_text("text")  # Extract text from each page
+        return text
+    except Exception as e:
+        st.error(f"Error reading PDF file: {e}")
+        return ""
+
+# Function to extract text from DOCX
+def extract_text_from_docx(file):
+    doc = Document(file)  # Open DOCX file
+    doc_text = [paragraph.text for paragraph in doc.paragraphs]  # Extract text from paragraphs
+    return '\n'.join(doc_text)  # Join paragraphs into a single string
+
+# Function to generate summary
+def generate_summary(text, num_sentences=7):
+    sentences = sent_tokenize(text)  # Tokenize text into sentences
+    preprocessed_text = preprocess_text(text)  # Preprocess text for analysis
+    word_freq = Counter(preprocessed_text.split())  # Count frequency of each word
+    total_words = sum(word_freq.values())  # Total number of words
+    word_tfidf = {word: freq/total_words * (1 + sentences.count(word)) for word, freq in word_freq.items()}  # Calculate TF-IDF scores
+    sent_scores = {}  # Initialize sentence scores
+    for sentence in sentences:
+        for word in preprocess_text(sentence).split():
+            if word in word_tfidf:
+                if len(sentence.split()) < 30:
+                    sent_scores[sentence] = sent_scores.get(sentence, 0) + word_tfidf[word]  # Calculate sentence scores
+    summary_sentences = heapq.nlargest(num_sentences, sent_scores, key=sent_scores.get)  # Get top sentences based on scores
+    rephrased_sentences = []
+    for sentence in summary_sentences:
+        doc = nlp(sentence)  # Process sentence with SpaCy
+        subject = ""
+        verb = ""
+        for token in doc:
+            if token.dep_ == "nsubj":
+                subject = token.text
+            if token.pos_ == "VERB":
+                verb = token.text
+                break
+        if subject and verb:
+            rephrased = f"Regarding {subject}, it {verb}"
+            remaining_words = [token.text for token in doc if token.text not in [subject, verb] and token.pos_ not in ["DET", "ADP", "CONJ", "CCONJ"]]
+            rephrased += " " + " ".join(remaining_words)
+        else:
+            rephrased = sentence
+        rephrased_sentences.append(rephrased)  # Rephrase sentences
+    summary = ' '.join(rephrased_sentences)  # Join rephrased sentences into a summary
+    return summary
+
+# Streamlit app
+def main():
+    st.title("Text Summarization App") 
+
+    # Custom CSS for button color
+    st.markdown(
+        """
+        <style>
+        .stButton > button {
+            background-color: #006400;  /* Dark green */
+            color: white;  /* Text color */
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    uploaded_file = st.file_uploader("Upload Files (PDF, DOCX)", type=['pdf', 'docx'])  # File uploader
+    text = st.text_area("Or Enter Text Here:")  # Text input area
+    
+    if uploaded_file is not None:
+        file_type = uploaded_file.name.split('.')[-1]
+        if file_type == 'pdf':
+            text = extract_text_from_pdf(uploaded_file)
+        elif file_type == 'docx':
+            text = extract_text_from_docx(uploaded_file)
+    
+    if st.button("Summarize"):
+        if text:
+            summarized_text = generate_summary(text)
+            st.subheader("Summarized Text:") 
+            st.write(summarized_text) 
+
+if __name__ == '__main__':
+    main()  
